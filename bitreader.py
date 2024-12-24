@@ -5,7 +5,7 @@
 
 class BitReader(object):
 
-    def __init__(self, data ):
+    def __init__(self, data):
         self.data = data
         self.byteOffset = 0
         self.bitOffset = 0
@@ -22,15 +22,15 @@ class BitReader(object):
         return self.byteOffset * 8 + self.bitOffset
 
     def setPosition(self, newPosition):
-        self.byteOffset = newPosition / 8
+        self.byteOffset = newPosition // 8  # Use integer division
         self.bitOffset = newPosition % 8
 
     def skipBits(self, n):
-        self.byteOffset += (n / 8)
+        self.byteOffset += (n // 8)  # Use integer division
         self.bitOffset += (n % 8)
 
-        if (self.bitOffset > 7):
-            self.byteOffset = self.byteOffset + 1
+        if self.bitOffset > 7:
+            self.byteOffset += 1
             self.bitOffset -= 8
 
     def skipBytes(self, n):
@@ -43,26 +43,27 @@ class BitReader(object):
         return self.readBitsLong(n)
 
     def readBitsLong(self, n):
-        if (n == 0):
+        if n == 0:
             return 0
 
         retVal = 0
 
-        while (n >= 8):
+        while n >= 8:
             n -= 8
             retVal |= (self.readUnsignedByte() << n)
 
-        if (n > 0):
+        if n > 0:
             nextBit = self.bitOffset + n
             writeMask = (0xFF >> (8 - n))
 
-            if(nextBit > 8):
-                retVal |= (((self.data[self.byteOffset] << (nextBit - 8) | (self.data[self.byteOffset + 1] >> (16 - nextBit))) & writeMask))
-                self.byteOffset = self.byteOffset + 1
+            if nextBit > 8:
+                retVal |= (((self.data[self.byteOffset] << (nextBit - 8) |
+                            (self.data[self.byteOffset + 1] >> (16 - nextBit))) & writeMask))
+                self.byteOffset += 1
             else:
                 retVal |= ((self.data[self.byteOffset] >> (8 - nextBit)) & writeMask)
-                if (nextBit == 8):
-                    self.byteOffset = self.byteOffset + 1
+                if nextBit == 8:
+                    self.byteOffset += 1
 
             self.bitOffset = nextBit % 8
 
@@ -71,12 +72,13 @@ class BitReader(object):
     def readUnsignedByte(self):
         value = 0
 
-        if (self.bitOffset != 0):
-            value = ((self.data[self.byteOffset]) << self.bitOffset) | ((self.data[self.byteOffset + 1]) >> (8 - self.bitOffset))
+        if self.bitOffset != 0:
+            value = ((self.data[self.byteOffset] << self.bitOffset) |
+                     (self.data[self.byteOffset + 1] >> (8 - self.bitOffset)))
         else:
             value = self.data[self.byteOffset]
 
-        self.byteOffset = self.byteOffset + 1
+        self.byteOffset += 1
 
         return value & 0xFF
 
@@ -86,17 +88,17 @@ class BitReader(object):
     def readSignedExpGolombCodedInt(self):
         codeNum = self.readExpGolombCodeNum()
         sign = 1
-        if(codeNum % 2 == 0):
-            sign = -1;
+        if codeNum % 2 == 0:
+            sign = -1
 
-        return sign * ((codeNum + 1) / 2)
+        return sign * ((codeNum + 1) // 2)  # Use integer division
 
     def readExpGolombCodeNum(self):
         leadingZeros = 0
         value = 0
-        while (self.readBit() == 0):
-            leadingZeros = leadingZeros +1;
+        while self.readBit() == 0:
+            leadingZeros += 1
 
-        if(leadingZeros > 0):
+        if leadingZeros > 0:
             value = self.readBits(leadingZeros)
         return (1 << leadingZeros) - 1 + value

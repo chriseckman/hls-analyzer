@@ -29,7 +29,7 @@ class TSSegmentParser(object):
     def prepare(self):
         self._findContainerType()
 
-        if(self.containerType == self.CONTAINER_MPEG_TS):
+        if self.containerType == self.CONTAINER_MPEG_TS:
             self._readHeader()
             self.readSamples()
         else:
@@ -43,61 +43,61 @@ class TSSegmentParser(object):
 
     def getTrack(self, index):
         i = 0
-        for _, value in self.tracks.iteritems():
-            if(i == index):
+        for _, value in self.tracks.items():  # Use items() for Python 3 compatibility
+            if i == index:
                 return value
-            i = i + 1
+            i += 1
 
     def readSamples(self):
-        while (self.dataOffset < len(self.data) - 1):
+        while self.dataOffset < len(self.data) - 1:
             byteRead = self.data[self.dataOffset]
-            self.dataOffset = self.dataOffset + 1
+            self.dataOffset += 1
 
-            if(byteRead == self.MPEGTS_SYNC
-                and (len(self.data) - self.dataOffset) >= self.MPEGTS_PACKET_SIZE):
+            if (byteRead == self.MPEGTS_SYNC and
+                (len(self.data) - self.dataOffset) >= self.MPEGTS_PACKET_SIZE):
 
                 packet = self.data[self.dataOffset:self.dataOffset
-                    + self.MPEGTS_PACKET_SIZE]
-                self.dataOffset = self.dataOffset + self.MPEGTS_PACKET_SIZE
+                                   + self.MPEGTS_PACKET_SIZE]
+                self.dataOffset += self.MPEGTS_PACKET_SIZE
 
                 self._processTSPacket(packet)
 
     def _findContainerType(self):
-        while (self.dataOffset < len(self.data)):
-            if (self.data[self.dataOffset] == self.MPEGTS_SYNC):
+        while self.dataOffset < len(self.data):
+            if self.data[self.dataOffset] == self.MPEGTS_SYNC:
                 self.containerType = self.CONTAINER_MPEG_TS
                 break
 
-            elif((len(self.data) - self.dataOffset) >= 4):
-                dataRead =  (self.data[self.dataOffset] << 8) | (self.data[self.dataOffset + 1])
-                if (dataRead == 0x4944 or (dataRead & 0xfff6) == 0xfff0):
+            elif (len(self.data) - self.dataOffset) >= 4:
+                dataRead = (self.data[self.dataOffset] << 8) | (self.data[self.dataOffset + 1])
+                if dataRead == 0x4944 or (dataRead & 0xfff6) == 0xfff0:
                     self.containerType = self.CONTAINER_RAW_AAC
                     break
 
-            self.dataOffset = self.dataOffset + 1
+            self.dataOffset += 1
 
-        if(self.containerType == self.CONTAINER_UNKNOWN):
+        if self.containerType == self.CONTAINER_UNKNOWN:
             raise Exception('Format not supported')
 
     def _readHeader(self):
-        while (self.dataOffset < len(self.data) - 1):
+        while self.dataOffset < len(self.data) - 1:
             byteRead = self.data[self.dataOffset]
-            self.dataOffset = self.dataOffset + 1
+            self.dataOffset += 1
 
-            if(byteRead == self.MPEGTS_SYNC
-                and (len(self.data) - self.dataOffset) >= self.MPEGTS_PACKET_SIZE):
+            if (byteRead == self.MPEGTS_SYNC and
+                (len(self.data) - self.dataOffset) >= self.MPEGTS_PACKET_SIZE):
 
                 packet = self.data[self.dataOffset:self.dataOffset
-                    + self.MPEGTS_PACKET_SIZE]
-                self.dataOffset = self.dataOffset + self.MPEGTS_PACKET_SIZE
+                                   + self.MPEGTS_PACKET_SIZE]
+                self.dataOffset += self.MPEGTS_PACKET_SIZE
 
                 self._processTSPacket(packet)
 
-                if(self.pmtParsed):
+                if self.pmtParsed:
                     break
 
     def _processTSPacket(self, packet):
-        self.packetsCount = self.packetsCount + 1
+        self.packetsCount += 1
 
         packetParser = BitReader(packet)
         packetParser.skipBits(1)
@@ -110,26 +110,26 @@ class TSSegmentParser(object):
 
         adaptation_field = (packetParser.readUnsignedByte() & 0x30) >> 4
 
-        if (adaptation_field > 1):
-            length = packetParser.readUnsignedByte();
-            if (length > 0):
+        if adaptation_field > 1:
+            length = packetParser.readUnsignedByte()
+            if length > 0:
                 packetParser.skipBytes(length)
 
-        if (adaptation_field == 1 or adaptation_field == 3):
-            if (pid == 0):
+        if adaptation_field == 1 or adaptation_field == 3:
+            if pid == 0:
                 self._parseProgramId(payload_unit_start_indicator, packetParser)
 
-            elif (pid == self.pmtId):
+            elif pid == self.pmtId:
                 self._parseProgramTable(payload_unit_start_indicator, packetParser)
 
             else:
                 track = self.tracks.get(pid, None)
-                if(track is not None):
+                if track is not None:
                     track.appendData(payload_unit_start_indicator, packetParser)
 
     def _parseProgramId(self, payload_unit_start_indicator, packetParser):
-        if (payload_unit_start_indicator):
-            packetParser.skipBytes( packetParser.readUnsignedByte() )
+        if payload_unit_start_indicator:
+            packetParser.skipBytes(packetParser.readUnsignedByte())
 
         packetParser.skipBits(12)
 
@@ -141,24 +141,25 @@ class TSSegmentParser(object):
         self.pmtId = packetParser.readBits(13)
 
     def _parseProgramTable(self, payload_unit_start_indicator, packetParser):
-        if (payload_unit_start_indicator):
+        if payload_unit_start_indicator:
             packetParser.skipBits(packetParser.readUnsignedByte() * 8)
 
         packetParser.skipBits(12)
         section_length = packetParser.readBits(12)
         packetParser.skipBits(4 + 7 * 8)
         program_info_length = packetParser.readBits(12)
-        packetParser.skipBytes( program_info_length )
+        packetParser.skipBytes(program_info_length)
         bytesRemaining = section_length - 9 - program_info_length - 4
 
-        while (bytesRemaining > 0):
+        while bytesRemaining > 0:
             streamType = packetParser.readBits(8)
             packetParser.skipBits(3)
             elementaryPID = packetParser.readBits(13)
             packetParser.skipBits(4)
             ES_info_length = packetParser.readBits(12)
             packetParser.skipBits(ES_info_length * 8)
-            bytesRemaining = bytesRemaining - ES_info_length - 5
+            bytesRemaining -= ES_info_length + 5
             self.tracks[elementaryPID] = PESReader(elementaryPID, streamType)
 
         self.pmtParsed = True
+

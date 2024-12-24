@@ -10,23 +10,24 @@ import os
 import posixpath
 
 try:
-    from cookielib import CookieJar
+    from cookielib import CookieJar  # Python 2
 except ImportError:
-    from http.cookiejar import CookieJar
-
+    from http.cookiejar import CookieJar  # Python 3
 
 try:
-    import urlparse as url_parser
+    import urlparse as url_parser  # Python 2
     import urllib2
     cj = CookieJar()
     cookieProcessor = urllib2.HTTPCookieProcessor(cj)
     opener = urllib2.build_opener(cookieProcessor)
     urlopen = opener.open
 except ImportError:
-    import urllib.parse as url_parser
-    from urllib.request import urlopen as url_opener
-    urlopen = url_opener
-
+    import urllib.parse as url_parser  # Python 3
+    from urllib.request import build_opener, HTTPCookieProcessor, urlopen
+    cj = CookieJar()
+    cookieProcessor = HTTPCookieProcessor(cj)
+    opener = build_opener(cookieProcessor)
+    urlopen = opener.open
 
 from m3u8.model import M3U8, Playlist, IFramePlaylist, Media, Segment
 from m3u8.parser import parse, is_url
@@ -77,7 +78,7 @@ def _read_python2x(resource):
     return resource.read().strip()
 
 def _read_python3x(resource):
-    return  resource.read().decode(resource.headers.get_content_charset(failobj="utf-8"))
+    return resource.read().decode(resource.headers.get_content_charset(failobj="utf-8"))
 
 def _load_from_file(uri):
     with open(uri) as fileobj:
