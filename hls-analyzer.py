@@ -13,6 +13,7 @@ from bitreader import BitReader
 from ts_segment import TSSegmentParser
 from videoframesinfo import VideoFramesInfo
 import logging
+import requests
 
 warnings = []
 captions_detected = []  # Global list to track detected captions
@@ -34,7 +35,27 @@ def log_warning(message):
     logging.warning(message)  # Log to file
     print(f"Warning: {message}")  # Print to console
 
+def log_manifest_content(url):
+    try:
+        manifest = m3u8.load(url)
+        logging.info(f"Manifest content for {url}:\n{manifest.dumps()}")  # Dumps manifest content
+        print(f"Manifest content logged for {url}")
+    except Exception as e:
+        logging.error(f"Failed to load manifest {url}: {e}")
+        print(f"Failed to load manifest {url}: {e}")
 
+def verify_uri_accessibility(uri):
+    try:
+        response = requests.head(uri)
+        if response.status_code == 200:
+            logging.info(f"URI is accessible: {uri}")
+            print(f"URI is accessible: {uri}")
+        else:
+            logging.warning(f"URI returned status code {response.status_code}: {uri}")
+            print(f"URI returned status code {response.status_code}: {uri}")
+    except Exception as e:
+        logging.error(f"Error accessing URI {uri}: {e}")
+        print(f"Error accessing URI {uri}: {e}")
 
 try:
     import urllib.request, urllib.error, urllib.parse
@@ -217,24 +238,112 @@ def analyze_variants_frame_alignment():
     logging.info("Completed alignment check for all variants.")
 
 
-                
-def check_for_captions(playlist):
-    if hasattr(playlist, 'media') and playlist.media:
-        print("\n** Checking for captions **")
+def check_for_captions(playlist, base_url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Origin': base_url.split('/')[2],
+        'Referer': base_url
+    }
+    
+    if hasattr(playlist, 'media'):
         for media in playlist.media:
-            if media.type in ['SUBTITLES', 'CLOSED-CAPTIONS']:
-                caption_info = {
-                    "type": media.type,
-                    "language": media.language or "Unknown",
-                    "uri": media.uri or "Embedded in video stream"
+            if media.type == 'SUBTITLES':
+                subtitle_uri = media.uri
+                if not subtitle_uri.startswith('http'):
+                    subtitle_uri = urllib.parse.urljoin(base_url, subtitle_uri)
+                
+                try:
+                    session = requests.Session()
+                    response = session.get(subtitle_uri, headers=headers, allow_redirects=True)
+                    if response.status_code == 200:
+                        logging.info(f"Successfully accessed subtitle playlist: {subtitle_uri}")
+                    else:
+                        logging.warning(f"Subtitle playlist {subtitle_uri} returned status {response.status_code}")
+                except Exception as e:
+                    logging.error(f"Error accessing subtitle playlist: {str(e)}")
+
+                captions_detected.append({
+                    'language': media.language,
+                    'type': media.type,
+                    'uri': subtitle_uri,
+                    'group_id': media.group_id,
+                    'name': media.name
+                })
+
+def diagnose_subtitles(master_playlist, base_url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Origin': base_url.split('/')[2],
+        'Referer': base_url
+    }
+    
+    issues = []
+    subtitle_groups = {}
+    logging.info("Starting subtitle diagnosis")
+    
+    if hasattr(master_playlist, 'media'):
+        for media in master_playlist.media:
+            if media.type == 'SUBTITLES':
+                group_id = media.group_id
+                sub_uri = media.uri
+                if not sub_uri.startswith('http'):
+                    sub_uri = urllib.parse.urljoin(base_url, sub_uri)
+                    logging.info(f"Resolved relative subtitle URI to: {sub_uri}")
+                subtitle_groups[group_id] = {
+                    'uri': sub_uri,
+                    'language': media.language,
+                    'referenced': False
                 }
-                captions_detected.append(caption_info)
-                logging.info(f"Caption track found: {caption_info}")
-                print(f"Caption track found: {caption_info['language']} ({caption_info['type']})")
-                print(f"URI: {caption_info['uri']}")
+                logging.info(f"Found subtitle track - Group: {group_id}, Language: {media.language}")
+    
+    for playlist in master_playlist.playlists:
+        if hasattr(playlist.stream_info, 'subtitles'):
+            group_id = playlist.stream_info.subtitles
+            if group_id in subtitle_groups:
+                subtitle_groups[group_id]['referenced'] = True
+                logging.info(f"Subtitle group {group_id} is referenced by variant")
+            else:
+                msg = f"Variant references undefined subtitle group: {group_id}"
+                log_warning(msg)
+                issues.append(msg)
+    
+    for group_id, info in subtitle_groups.items():
+        try:
+            session = requests.Session()
+            response = session.get(info['uri'], headers=headers, allow_redirects=True)
+            if response.status_code != 200:
+                msg = f"Subtitle playlist {info['uri']} returned status {response.status_code}"
+                log_warning(msg)
+                issues.append(msg)
+            else:
+                logging.info(f"Successfully verified subtitle playlist: {info['uri']}")
+        except Exception as e:
+            msg = f"Failed to load subtitle playlist {info['uri']}: {str(e)}"
+            log_warning(msg)
+            issues.append(msg)
+    
+    if not subtitle_groups:
+        log_warning("No subtitle tracks found in master playlist")
+    
+    return issues
+
+def print_subtitle_diagnosis(master_playlist, base_url):
+    """
+    Print diagnostic results
+    """
+    print("\n** Subtitle Diagnostic Results **")
+    issues = diagnose_subtitles(master_playlist, base_url)
+    
+    if issues:
+        print("\nPotential Issues Found:")
+        for issue in issues:
+            print(f"- {issue}")
+            logging.warning(issue)
     else:
-        print("\nNo captions or subtitle tracks found in the playlist.")
-        logging.info("No captions or subtitle tracks found in the playlist.")
+        print("No subtitle issues detected")
+        logging.info("No subtitle issues detected")
         
 def generate_summary():
     logging.info("Generating summary report.")
@@ -262,35 +371,117 @@ def generate_summary():
         print("\nNo warnings encountered during the analysis.")
     logging.info("Summary report generated.")
 
+def validate_uri_paths(manifest_url, m3u8_obj):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Origin': manifest_url.split('/')[2],
+        'Referer': manifest_url
+    }
+    
+    base_path = manifest_url.rsplit('/', 1)[0] + '/'
+    issues = []
+    
+    # Log manifest version and base path
+    logging.info(f"Manifest version: {m3u8_obj.version}")
+    logging.info(f"Base path for resolution: {base_path}")
+    
+    # Check all URIs in playlists
+    if hasattr(m3u8_obj, 'playlists'):
+        for playlist in m3u8_obj.playlists:
+            try:
+                # Compare both resolution methods
+                direct_url = playlist.absolute_uri
+                relative_url = urllib.parse.urljoin(base_path, playlist.uri)
+                
+                logging.info(f"Checking playlist URI:")
+                logging.info(f"Direct URL: {direct_url}")
+                logging.info(f"Resolved relative URL: {relative_url}")
+                
+                # Try both URLs
+                direct_response = requests.head(direct_url, headers=headers)
+                relative_response = requests.head(relative_url, headers=headers)
+                
+                if direct_response.status_code != relative_response.status_code:
+                    issues.append({
+                        'type': 'resolution_mismatch',
+                        'direct_url': direct_url,
+                        'direct_status': direct_response.status_code,
+                        'relative_url': relative_url,
+                        'relative_status': relative_response.status_code
+                    })
+                    
+            except Exception as e:
+                logging.error(f"Error checking URIs: {str(e)}")
+                issues.append({
+                    'type': 'error',
+                    'uri': playlist.uri,
+                    'error': str(e)
+                })
+    
+    return issues
+
+def print_path_issues(issues):
+    if issues:
+        msg = "\nPath Resolution Issues:"
+        print(msg)
+        logging.info(msg)  
+        for issue in issues:
+            msg = f"\nOriginal path: {issue['original_path']}\nResolved to: {issue['resolved_url']}"
+            print(msg)
+            logging.info(msg)  
+
+def download_url(uri, httpRange=None):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Origin': args.url.split('/')[2],
+        'Referer': args.url
+    }
+    
+    session = requests.Session()
+    if httpRange:
+        headers['Range'] = httpRange
+    
+    response = session.get(uri, headers=headers)
+    return response.content
 
 
 # MAIN
-parser = argparse.ArgumentParser(description='Analyze HLS streams and gets useful information')
-
-parser.add_argument('url', metavar='Url', type=str, help='Url of the stream to be analyzed')
-parser.add_argument('-s', action="store", dest="segments", type=int, default=1, help='Number of segments to be analyzed per playlist')
-parser.add_argument('-l', action="store", dest="frame_info_len", type=int, default=30, help='Max number of frames per track whose information will be reported')
+parser = argparse.ArgumentParser(description='Analyze HLS streams and get useful information')
+parser.add_argument('url', metavar='Url', type=str, help='URL of the stream to be analyzed')
+parser.add_argument('-s', action="store", dest="segments", type=int, default=1, help='Number of segments to analyze per playlist')
+parser.add_argument('-l', action="store", dest="frame_info_len", type=int, default=30, help='Max frames per track for reporting')
 
 args = parser.parse_args()
+base_url = args.url
 
 m3u8_obj = m3u8.load(args.url)
 num_segments_to_analyze_per_playlist = args.segments
 max_frames_to_show = args.frame_info_len
 
+path_issues = validate_uri_paths(args.url, m3u8_obj)
+print_path_issues(path_issues)
+
 if m3u8_obj.is_variant:
+    print_subtitle_diagnosis(m3u8_obj, base_url)
     logging.info("Master playlist detected. Starting analysis of variants.")
     print("Master playlist. List of variants:")
+    
+    # Check for subtitles in master playlist first
+    check_for_captions(m3u8_obj, base_url)
+    print_subtitle_diagnosis(m3u8_obj, base_url)
+    
     for playlist in m3u8_obj.playlists:
         print(f"\tPlaylist: {playlist.absolute_uri}, bw: {playlist.stream_info.bandwidth}")
     print("")
     for playlist in m3u8_obj.playlists:
         variant_playlist = m3u8.load(playlist.absolute_uri)
         analyze_variant(variant_playlist, playlist.stream_info.bandwidth)
-        check_for_captions(variant_playlist)
 else:
     logging.info("Single variant playlist detected. Starting analysis.")
     analyze_variant(m3u8_obj, 0)
-    check_for_captions(m3u8_obj)
+    check_for_captions(m3u8_obj, base_url)
 
 analyze_variants_frame_alignment()
 generate_summary()
@@ -299,4 +490,7 @@ logging.info("Analysis completed successfully.")
 print("\nAnalysis completed successfully.")
 print("Warnings were issued for missing or misaligned segments, but the script continued analyzing the rest of the stream.")
 print(f"Total variants analyzed: {len(videoFramesInfoDict)}")
+
+
+
 
