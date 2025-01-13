@@ -14,6 +14,7 @@ from ts_segment import TSSegmentParser
 from videoframesinfo import VideoFramesInfo
 import logging
 import requests
+import time
 
 warnings = []
 captions_detected = []  # Global list to track detected captions
@@ -83,23 +84,26 @@ def download_url(uri, httpRange=None):
 def analyze_variant(variant, bw):
     logging.info(f"Analyzing variant ({bw})")
     print(f"***** Analyzing variant ({bw}) *****")
-    print("\n\t** Generic information **")
-    logging.info(f"Variant details: Version={variant.version}, Media Sequence={variant.media_sequence}, Is Live={not variant.is_endlist}")
-    print(f"\tVersion: {variant.version}")
-    print(f"\tStart Media sequence: {variant.media_sequence}")
-    print(f"\tIs Live: {not variant.is_endlist}")
-    print(f"\tEncrypted: {variant.key is not None}")
-    print(f"\tNumber of segments: {len(variant.segments)}")
-    print(f"\tPlaylist duration: {get_playlist_duration(variant)}")
-
-    start = 0
+    
+    # Initialize the dictionary for this variant
     videoFramesInfoDict[bw] = VideoFramesInfo()
-
+    logging.debug(f"Initialized VideoFramesInfo for {bw}")
+    
+    # Check if segments exist
+    if not variant.segments:
+        logging.warning(f"No segments found in variant {bw}. Skipping.")
+        return
+    
+    # Analyze segments
+    start = 0
     if not variant.is_endlist:
         start = max(0, len(variant.segments) - max(3, num_segments_to_analyze_per_playlist))
 
     for i in range(start, min(start + num_segments_to_analyze_per_playlist, len(variant.segments))):
         analyze_segment(variant.segments[i], bw, variant.media_sequence + i)
+
+    logging.info(f"Completed analysis for variant {bw}.")
+
 
 def get_playlist_duration(variant):
     duration = 0
@@ -216,6 +220,11 @@ def analyze_segment(segment, bw, segment_index):
 
 
 def analyze_variants_frame_alignment():
+    if not videoFramesInfoDict:
+        logging.warning("No video frame information found. Skipping alignment analysis.")
+        print("No variants to analyze for frame alignment.")
+        return
+
     df = videoFramesInfoDict.copy()
     bw, vf = df.popitem()
     logging.info(f"Starting alignment check for reference variant {bw}")
@@ -238,6 +247,7 @@ def analyze_variants_frame_alignment():
     logging.info("Completed alignment check for all variants.")
 
 
+
 def check_for_captions(playlist, base_url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -245,7 +255,8 @@ def check_for_captions(playlist, base_url):
         'Origin': base_url.split('/')[2],
         'Referer': base_url
     }
-    
+    headers = {}
+
     if hasattr(playlist, 'media'):
         for media in playlist.media:
             if media.type == 'SUBTITLES':
@@ -278,7 +289,8 @@ def diagnose_subtitles(master_playlist, base_url):
         'Origin': base_url.split('/')[2],
         'Referer': base_url
     }
-    
+    headers = {}
+
     issues = []
     subtitle_groups = {}
     logging.info("Starting subtitle diagnosis")
@@ -378,7 +390,8 @@ def validate_uri_paths(manifest_url, m3u8_obj):
         'Origin': manifest_url.split('/')[2],
         'Referer': manifest_url
     }
-    
+    headers = {}
+
     base_path = manifest_url.rsplit('/', 1)[0] + '/'
     issues = []
     
@@ -394,13 +407,24 @@ def validate_uri_paths(manifest_url, m3u8_obj):
                 direct_url = playlist.absolute_uri
                 relative_url = urllib.parse.urljoin(base_path, playlist.uri)
                 
+                direct_response = None
+                relative_response = None
+                
                 logging.info(f"Checking playlist URI:")
                 logging.info(f"Direct URL: {direct_url}")
                 logging.info(f"Resolved relative URL: {relative_url}")
                 
                 # Try both URLs
-                direct_response = requests.head(direct_url, headers=headers)
-                relative_response = requests.head(relative_url, headers=headers)
+                if not verify_url(direct_url) or not verify_url(relative_url):
+                    logging.warning(f"Resolution mismatch or inaccessible URI: {playlist.uri}")
+                    issues.append({
+                        'type': 'resolution_mismatch',
+                        'original_path': playlist.uri,
+                        'direct_url': direct_url,
+                        'resolved_url': relative_url,
+                        'direct_status': direct_response.status_code if 'direct_response' in locals() else 'N/A',
+                        'relative_status': relative_response.status_code if 'relative_response' in locals() else 'N/A'
+                    })
                 
                 if direct_response.status_code != relative_response.status_code:
                     issues.append({
@@ -427,9 +451,17 @@ def print_path_issues(issues):
         print(msg)
         logging.info(msg)  
         for issue in issues:
-            msg = f"\nOriginal path: {issue['original_path']}\nResolved to: {issue['resolved_url']}"
+            if issue['type'] == 'resolution_mismatch':
+                msg = (f"\nOriginal path: {issue.get('original_path', 'N/A')}\n"
+                       f"Direct URL: {issue.get('direct_url', 'N/A')} (Status: {issue.get('direct_status', 'N/A')})\n"
+                       f"Resolved to: {issue.get('resolved_url', 'N/A')} (Status: {issue.get('relative_status', 'N/A')})")
+            elif issue['type'] == 'error':
+                msg = f"\nURI: {issue.get('uri', 'N/A')} caused an error: {issue.get('error', 'N/A')}"
+            else:
+                msg = f"\nUnknown issue type: {issue}"
             print(msg)
-            logging.info(msg)  
+            logging.info(msg)
+  
 
 def download_url(uri, httpRange=None):
     headers = {
@@ -438,6 +470,8 @@ def download_url(uri, httpRange=None):
         'Origin': args.url.split('/')[2],
         'Referer': args.url
     }
+    headers = {}
+
     
     session = requests.Session()
     if httpRange:
@@ -446,6 +480,35 @@ def download_url(uri, httpRange=None):
     response = session.get(uri, headers=headers)
     return response.content
 
+def verify_url(url):
+    try:
+        response = requests.head(url)
+        if response.status_code == 200:
+            return True
+        else:
+            logging.warning(f"URL {url} returned status code {response.status_code}")
+            return False
+    except Exception as e:
+        logging.error(f"Error verifying URL {url}: {e}")
+        return False
+
+def load_with_retries(url, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            return m3u8.load(url)
+        except urllib.error.HTTPError as e:
+            if attempt < retries - 1:
+                logging.warning(f"Retry {attempt + 1} for URL {url} after HTTPError: {e}")
+                time.sleep(delay)
+            else:
+                logging.error(f"Failed to load {url} after {retries} attempts: {e}")
+                raise
+        except Exception as e:
+            logging.error(f"Unexpected error on attempt {attempt + 1}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                raise
 
 # MAIN
 parser = argparse.ArgumentParser(description='Analyze HLS streams and get useful information')
@@ -476,8 +539,16 @@ if m3u8_obj.is_variant:
         print(f"\tPlaylist: {playlist.absolute_uri}, bw: {playlist.stream_info.bandwidth}")
     print("")
     for playlist in m3u8_obj.playlists:
-        variant_playlist = m3u8.load(playlist.absolute_uri)
-        analyze_variant(variant_playlist, playlist.stream_info.bandwidth)
+        if not verify_url(playlist.absolute_uri):
+            logging.warning(f"Skipping inaccessible playlist URL: {playlist.absolute_uri}")
+            continue
+        
+        try:
+            variant_playlist = load_with_retries(playlist.absolute_uri)
+            analyze_variant(variant_playlist, playlist.stream_info.bandwidth)
+        except Exception as e:
+            logging.error(f"Skipping variant {playlist.absolute_uri} due to error: {e}")
+            continue
 else:
     logging.info("Single variant playlist detected. Starting analysis.")
     analyze_variant(m3u8_obj, 0)
