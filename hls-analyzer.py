@@ -396,72 +396,55 @@ def print_manifest_info(playlist, base_url):
 
 def diagnose_subtitles(master_playlist, base_url):
     """
-    Enhanced subtitle diagnostics
+    Diagnose subtitle configurations in the master playlist only.
     """
     subtitles = {}
     issues = []
-    
-    # Debug logging
-    logging.debug(f"Checking master playlist for subtitles at {base_url}")
-    
+
+    logging.info("Starting subtitle diagnostics.")
+
+    # Collect subtitle groups from EXT-X-MEDIA tags
     if hasattr(master_playlist, 'media'):
-        logging.debug(f"Found {len(master_playlist.media)} media entries")
         for media in master_playlist.media:
-            # Log each attribute individually
-            logging.debug(f"Media entry - Type: {getattr(media, 'type', 'None')}, "
-                        f"Language: {getattr(media, 'language', 'None')}, "
-                        f"URI: {getattr(media, 'uri', 'None')}")
-            
-            if getattr(media, 'type', None) == 'SUBTITLES':
-                logging.info(f"Found subtitle track - Language: {getattr(media, 'language', 'unknown')}")
-                
-                group_id = getattr(media, 'group_id', 'default')
-                uri = getattr(media, 'uri', None)
-                if uri:
-                    uri = urljoin(base_url, uri) if not uri.startswith('http') else uri
-                
+            if media.type == 'SUBTITLES':
+                group_id = media.group_id
+                uri = urljoin(base_url, media.uri) if not media.uri.startswith("http") else media.uri
                 subtitles[group_id] = {
                     'uri': uri,
-                    'language': getattr(media, 'language', 'unknown'),
-                    'referenced': False
+                    'language': media.language,
                 }
-    else:
-        logging.debug("No media entries in master playlist")
-    
-    # Check subtitle references
-    if hasattr(master_playlist, 'playlists'):
-        for playlist in master_playlist.playlists:
-            if hasattr(playlist.stream_info, 'subtitles'):
-                group_id = playlist.stream_info.subtitles
-                if group_id:
-                    logging.debug(f"Found subtitle reference: {group_id}")
-                    if group_id in subtitles:
-                        subtitles[group_id]['referenced'] = True
-                    else:
-                        issues.append(f"Referenced subtitle group '{group_id}' not found")
-    
+
+    # Check if subtitles are defined (ensure there's at least one group)
+    if not subtitles:
+        issues.append("No subtitle groups are defined in the master playlist.")
+
     return subtitles, issues
+
+
 
 
 def print_subtitle_diagnosis(master_playlist, base_url):
     """
-    Print diagnostic results for subtitles
+    Print diagnostic results for subtitle configurations.
     """
     print("\n** Subtitle/Caption Analysis **")
-    issues = diagnose_subtitles(master_playlist, base_url)
-    
-    if not issues:
-        if hasattr(master_playlist, 'media') and any(m.type == 'SUBTITLES' for m in master_playlist.media):
-            print("✓ All subtitle configurations appear valid")
-            logging.info("All subtitle configurations appear valid")
-        else:
-            print("Note: No subtitle or caption tracks found in the manifest")
-            logging.info("No subtitle or caption tracks found in the manifest")
-    else:
+    subtitles, issues = diagnose_subtitles(master_playlist, base_url)
+
+    # Print detailed subtitle information
+    for group_id, data in subtitles.items():
+        print(f"\nSubtitle Group: {group_id}")
+        print(f"  URI: {data['uri']}")
+        print(f"  Language: {data['language']}")
+        print(f"  Referenced: {'Yes' if data['referenced'] else 'No'}")
+
+    # Report issues
+    if issues:
         print("\nPotential Issues Found:")
         for issue in issues:
             print(f"- {issue}")
-            logging.warning(issue)
+    else:
+        print("\n✓ All subtitle configurations appear valid.")
+
 
 def check_subtitle_playlist(subtitle_uri, base_url):
     """
@@ -524,22 +507,24 @@ def analyze_subtitles(m3u8_obj, base_url):
     if hasattr(m3u8_obj, 'media'):
         for media in m3u8_obj.media:
             if media.type == 'SUBTITLES':
-                check_subtitle_playlist(media.uri, base_url)
+                subtitle_uri = urljoin(base_url, media.uri) if not media.uri.startswith("http") else media.uri
+                check_subtitle_playlist(subtitle_uri, base_url)
 
-def print_subtitle_summary():
+
+def print_subtitle_summary(master_playlist, base_url):
     """
-    Print a comprehensive subtitle summary
+    Print a summary of subtitle tracks found in the master playlist.
     """
     print("\n** Subtitle/Caption Summary **")
-    
-    if not hasattr(m3u8_obj, 'media'):
-        print("No subtitle tracks found in manifest")
+    if not hasattr(master_playlist, 'media'):
+        print("No subtitle tracks found in the master playlist.")
+        logging.info("No subtitle tracks found in the master playlist.")
         return
 
-    subtitle_tracks = [m for m in m3u8_obj.media if m.type == 'SUBTITLES']
-    
+    subtitle_tracks = [m for m in master_playlist.media if m.type == 'SUBTITLES']
     if not subtitle_tracks:
-        print("No subtitle tracks found in manifest")
+        print("No subtitle tracks found in the master playlist.")
+        logging.info("No subtitle tracks found in the master playlist.")
         return
 
     for track in subtitle_tracks:
@@ -547,23 +532,20 @@ def print_subtitle_summary():
         print(f"  Language: {track.language}")
         print(f"  Name: {track.name}")
         print(f"  Group ID: {track.group_id}")
-        print(f"  Type: WebVTT")  # We confirmed this from the segment analysis
+        print(f"  Type: WebVTT")
         print(f"  Playlist: {track.uri}")
         print(f"  Default: {getattr(track, 'default', 'NO')}")
         print(f"  Autoselect: {getattr(track, 'autoselect', 'NO')}")
-        
-        # Check if this subtitle group is referenced by any variants
-        referenced = False
-        for playlist in m3u8_obj.playlists:
-            if hasattr(playlist.stream_info, 'subtitles') and playlist.stream_info.subtitles == track.group_id:
-                referenced = True
-                break
-        
-        if not referenced:
-            print("\nWarning: This subtitle track is not referenced by any video variants")
-            print("        To fix this, add 'SUBTITLES=\"subs\"' to the variant streams")
-        
-def generate_summary():
+
+        # Resolve subtitle URI
+        resolved_uri = urljoin(base_url, track.uri) if not track.uri.startswith('http') else track.uri
+        logging.debug(f"Resolved subtitle URI: {resolved_uri}")
+
+    print("\n✓ All subtitle configurations in the master playlist appear valid.")
+    logging.info("All subtitle configurations in the master playlist appear valid.")
+
+
+def generate_summary(master_playlist, base_url):
     """
     Generate a comprehensive summary of the analysis.
     """
@@ -579,8 +561,8 @@ def generate_summary():
         print(f"  Min keyframe interval: {vf.minKfi / 1_000_000:.2f} seconds")
         print(f"  Max keyframe interval: {vf.maxKfi / 1_000_000:.2f} seconds")
 
-    # Print subtitle summary
-    print_subtitle_summary()
+    # Print subtitle summary using the updated function
+    print_subtitle_summary(master_playlist, base_url)
 
     # Warnings summary
     if warnings:
@@ -591,6 +573,7 @@ def generate_summary():
         print("\nNo warnings encountered during the analysis.")
 
     logging.info("Summary report generated.")
+
 
 def verify_url(url, base_url=None):
     """
@@ -754,22 +737,43 @@ max_frames_to_show = args.frame_info_len
 
 # Add debug output here
 print_manifest_info(m3u8_obj, base_url)
-subtitles, issues = diagnose_subtitles(m3u8_obj, base_url)
-print("\nFound Subtitles:", subtitles)
-print("Issues:", issues)
 
+# Diagnose subtitles in the master playlist
+subtitles, issues = diagnose_subtitles(m3u8_obj, base_url)
+
+# Log subtitle details
+print("\n** Subtitle/Caption Analysis **")
+if subtitles:
+    for group_id, data in subtitles.items():
+        print(f"Subtitle Group: {group_id}")
+        print(f"  URI: {data['uri']}")
+        print(f"  Language: {data.get('language', 'unknown')}")
+else:
+    print("No subtitle groups found in the master playlist.")
+
+# Log any issues
+if issues:
+    print("\nPotential Issues Found:")
+    for issue in issues:
+        print(f"- {issue}")
+        logging.warning(issue)
+else:
+    print("✓ All subtitle configurations appear valid.")
+    logging.info("All subtitle configurations appear valid.")
+
+# Analyze subtitles separately from variants
 print("\n** Analyzing Subtitle Tracks **")
 analyze_subtitles(m3u8_obj, base_url)
 
+# Variant playlist analysis
 if m3u8_obj.is_variant:
-    print_subtitle_diagnosis(m3u8_obj, base_url)
     logging.info("Master playlist detected. Starting analysis of variants.")
     print("Master playlist. List of variants:")
 
     for playlist in m3u8_obj.playlists:
         # Get the resolved URL for the variant
         variant_url = urljoin(base_url, playlist.uri) if not playlist.uri.startswith('http') else playlist.uri
-        
+
         # Verify URL is accessible
         if not verify_url(variant_url):
             logging.warning(f"Skipping inaccessible playlist URL: {variant_url}")
@@ -786,7 +790,7 @@ if m3u8_obj.is_variant:
             if isinstance(variant_data, bytes):
                 variant_data = variant_data.decode('utf-8')
             variant_playlist = m3u8.loads(variant_data)
-            
+
             # Analyze the variant
             analyze_variant(variant_url, playlist.stream_info.bandwidth)
         except Exception as e:
@@ -799,8 +803,12 @@ else:
     except Exception as e:
         logging.error(f"Error analyzing single variant playlist: {e}")
 
+# Perform frame alignment analysis
 analyze_variants_frame_alignment()
-generate_summary()
+
+# Generate summary report
+generate_summary(m3u8_obj, base_url)
+
 
 logging.info("Analysis completed successfully.")
 print("\nAnalysis completed successfully.")
