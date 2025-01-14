@@ -310,9 +310,10 @@ def check_for_captions(playlist, base_url):
     """
     Check for and validate caption/subtitle tracks
     """
+    base_referer = '/'.join(base_url.split('/')[:3])
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36',
-        'Referer': 'https://dablu0xuev4uv.cloudfront.net',
+        'Referer': base_referer,
         'Accept': '*/*'
     }
 
@@ -471,9 +472,10 @@ def check_subtitle_playlist(subtitle_uri, base_url):
         
     print(f"\nChecking subtitle playlist: {subtitle_uri}")
     
+    base_referer = '/'.join(base_url.split('/')[:3])
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36',
-        'Referer': 'https://dablu0xuev4uv.cloudfront.net',
+        'Referer': base_referer,
         'Accept': '*/*'
     }
     
@@ -590,13 +592,14 @@ def generate_summary():
 
     logging.info("Summary report generated.")
 
-def verify_url(url):
+def verify_url(url, base_url=None):
     """
     Verify URL accessibility using exact curl-matching headers.
     """
+    base_referer = '/'.join((base_url or url).split('/')[:3])
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36',
-        'Referer': 'https://dablu0xuev4uv.cloudfront.net',
+        'Referer': base_referer,
         'Accept': '*/*'
     }
 
@@ -604,7 +607,7 @@ def verify_url(url):
         response = requests.head(
             url, 
             headers=headers,
-            verify=False,  # Matches --ssl-no-revoke
+            verify=False,
             allow_redirects=True
         )
         
@@ -687,13 +690,14 @@ def print_path_issues(issues):
             print(msg)
             logging.info(msg)
 
-def download_url(uri, httpRange=None):
+def download_url(uri, httpRange=None, base_url=None):
     """
     Download URL using exact headers from working curl command.
     """
+    base_referer = '/'.join((base_url or uri).split('/')[:3])
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36',
-        'Referer': 'https://dablu0xuev4uv.cloudfront.net',
+        'Referer': base_referer,
         'Accept': '*/*'
     }
 
@@ -705,7 +709,7 @@ def download_url(uri, httpRange=None):
         response = requests.get(
             uri, 
             headers=headers, 
-            verify=False,  # Matches --ssl-no-revoke
+            verify=False,
             allow_redirects=True
         )
         response.raise_for_status()
