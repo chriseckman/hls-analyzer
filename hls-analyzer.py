@@ -18,6 +18,9 @@ import time
 from urllib.parse import urljoin
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import traceback
+import requests
+from urllib.parse import urlparse
 
 warnings = []
 captions_detected = []  # Global list to track detected captions
@@ -95,70 +98,58 @@ def download_url(uri, httpRange=None):
         logging.error(f"Error downloading URL {uri}: {e}")
         return None
 
-
-def analyze_variant(variant_url, bw):
-    """
-    Analyze a specific variant playlist.
-
-    Args:
-        variant_url (str or M3U8): The URL or M3U8 object of the variant playlist
-        bw (int): The bandwidth of the variant
-    """
-    logging.info(f"Analyzing variant ({bw})")
-    print(f"***** Analyzing variant ({bw}) *****")
-
+def analyze_variant(variant_url, bandwidth):
+    origin = get_origin(variant_url)
+    if not check_cors(variant_url, origin=origin):
+        logging.warning(f"CORS compliance failed for URL: {variant_url} from Origin: {origin}")
+        return
+    logging.info(f"CORS compliance passed for URL: {variant_url} from Origin: {origin}")
     try:
-        # Initialize video frames info for this bandwidth if not exists
-        if bw not in videoFramesInfoDict:
-            videoFramesInfoDict[bw] = VideoFramesInfo()
+        logging.info(f"Starting analysis for variant {variant_url} bandwidth: {bandwidth}")
 
-        # Handle case where variant_url is already an M3U8 object
-        if isinstance(variant_url, m3u8.model.M3U8):
-            variant_playlist = variant_url
-        else:
-            # Download and parse the variant playlist if it's a URL
-            playlist_data = download_url(variant_url)
-            if not playlist_data:
-                logging.error(f"Failed to download variant playlist: {variant_url}")
-                return
-            
-            # Decode the playlist data if it's in bytes
-            if isinstance(playlist_data, bytes):
-                playlist_data = playlist_data.decode('utf-8')
-            
-            variant_playlist = m3u8.loads(playlist_data)
-
-        # Check if we have segments to analyze
-        if not variant_playlist.segments:
-            logging.warning(f"No segments found in variant {bw}. Skipping analysis.")
+        variant_data = download_url(variant_url)
+        if variant_data is None:
+            logging.error(f"Failed to download variant data from {variant_url}")
             return
 
-        logging.info(f"Found {len(variant_playlist.segments)} segments in variant {bw}.")
-        
-        # Process segments
+        if isinstance(variant_data, bytes):
+            variant_data = variant_data.decode('utf-8')
+        variant_playlist = m3u8.loads(variant_data)
+
+        if hasattr(variant_playlist, 'program_date_time') and variant_playlist.program_date_time:
+            logging.info(f"Variant playlist has program_date_time: {variant_playlist.program_date_time.isoformat()}")
+        else:
+            logging.info("Variant playlist has no program_date_time attribute set.")
+
+        base_url = variant_url.rsplit('/', 1)[0] + '/'
+        num_segments_to_analyze_per_playlist = 1
+
         for i, segment in enumerate(variant_playlist.segments[:num_segments_to_analyze_per_playlist]):
-            logging.info(f"Processing segment {i + 1} of {min(num_segments_to_analyze_per_playlist, len(variant_playlist.segments))}")
-            
-            # Get absolute segment URL
+            logging.info(f"Processing segment {i+1}/{num_segments_to_analyze_per_playlist} URI: {segment.uri}")
             segment_uri = urljoin(base_url, segment.uri) if not segment.uri.startswith('http') else segment.uri
             
-            # Download and analyze segment
             segment_data = download_url(segment_uri, get_range(segment.byterange))
-            if segment_data:
-                ts_parser = TSSegmentParser(bytearray(segment_data))
-                ts_parser.prepare()
-                
+            if segment_data is None:
+                logging.error(f"Failed segment download (Variant: {bandwidth}, Segment {i+1}, URI: {segment_uri})")
+                continue
+            else:
+                logging.info(f"Segment downloaded successfully (Variant: {bandwidth}, Segment {i+1})")
+            
+            ts_parser = TSSegmentParser(bytearray(segment_data))
+            ts_parser.prepare()
+
+            # THIS IS CRITICAL
+            try:
                 printFormatInfo(ts_parser)
                 printTimingInfo(ts_parser, segment)
-                analyzeFrames(ts_parser, bw, i)
-            else:
-                logging.error(f"Failed to download segment: {segment_uri}")
+                analyzeFrames(ts_parser, bandwidth, i)
+            except Exception as e:
+                logging.error(f"Exception during segment analysis: {e}")
+                logging.error(traceback.format_exc())
 
     except Exception as e:
-        logging.error(f"Error analyzing variant: {str(e)}")
-        import traceback
+        logging.error(f"Critical error processing variant {variant_url}: {e}")
         logging.error(traceback.format_exc())
-
 
 
 
@@ -207,24 +198,78 @@ def printTimingInfo(ts_parser, segment):
     else:
         print("\tDuration is 0")
 
-def analyzeFrames(ts_parser, bw, segment_index):
-    print ("\n\t** Frames **")
+# VideoFrameInfo definition
+class VideoFrameInfo:
+    def __init__(self):
+        # PTS of the last keyframe seen
+        self.lastKfPts = -1.0  
 
-    for i in range(0, ts_parser.getNumTracks()):
+        # Minimum interval between keyframes observed (in microseconds)
+        self.minKfi = float('inf')  
+
+        # Maximum interval between keyframes observed (in microseconds)
+        self.maxKfi = float('-inf')  
+
+        # Total number of keyframes encountered
+        self.count = 0  
+
+        # PTS of the first video frame for each segment, keyed by segment index
+        self.segmentsFirstFramePts = {}
+
+        # PTS of the last video frame for each segment, keyed by segment index
+        self.segmentsLastFramePts = {}
+
+        # Counter for total video frames
+        self.totalFrames = 0  
+
+        # Counter for total segments analyzed
+        self.totalSegments = 0  
+
+        # Total duration of segments analyzed (in microseconds)
+        self.totalDuration = 0.0  
+
+        # To track if a segment started with a keyframe
+        self.segmentsStartWithKf = {}
+
+        # Optional: Track detailed frame types and counts (I, P, B frames)
+        self.frameTypeCounts = {'I': 0, 'P': 0, 'B': 0}
+
+        # Optional: Average keyframe interval (calculated later)
+        self.avgKfi = 0.0
+
+# Existing global variables and functions...
+videoFramesInfoDict = {}
+
+def analyzeFrames(ts_parser, bw, segment_index):
+    print("\n\t** Frames **")
+
+    for i in range(ts_parser.getNumTracks()):
         track = ts_parser.getTrack(i)
-        print(("\tTrack #{0} - Frames: ".format(i)), end=' ')
+        print(f"\tTrack #{i} - Frames: ", end=' ')
 
         frameCount = min(max_frames_to_show, len(track.payloadReader.frames))
-        for j in range(0, frameCount):
-            print("{0}".format(track.payloadReader.frames[j].type), end=' ')
+        for j in range(frameCount):
+            print(f"{track.payloadReader.frames[j].type}", end=' ')
+
         if track.payloadReader.getMimeType().startswith("video/"):
-            print(("\tAA: {}, BB: {}".format(segment_index, bw)))
-            if len(track.payloadReader.frames) > 0:
-                videoFramesInfoDict[bw].segmentsFirstFramePts[segment_index] = track.payloadReader.frames[0].timeUs
+            print(f"\tAA: {segment_index}, BB: {bw}")
+
+            # Ensure bandwidth key initialization to prevent KeyError
+            if bw not in videoFramesInfoDict:
+                videoFramesInfoDict[bw] = VideoFrameInfo()
+                logging.info(f"Initialized videoFramesInfoDict[{bw}] with new VideoFrameInfo instance.")
+
+            if track.payloadReader.frames:
+                first_frame_pts = track.payloadReader.frames[0].timeUs
+                logging.info(f"First video frame PTS for bw {bw}, segment {segment_index}: {first_frame_pts}")
+                videoFramesInfoDict[bw].segmentsFirstFramePts[segment_index] = first_frame_pts
             else:
+                logging.warning(f"No video frames found for bw {bw}, segment {segment_index}. Setting PTS to 0.")
                 videoFramesInfoDict[bw].segmentsFirstFramePts[segment_index] = 0
+
             analyzeVideoframes(track, bw)
-        print ("")
+
+        print("")
 
 def analyzeVideoframes(track, bw):
     nkf = 0
@@ -653,7 +698,50 @@ def validate_uri_paths(manifest_url, m3u8_obj):
 
     return issues
 
+def check_cors(url, origin="https://your-domain.com"):
+    headers = {
+        "Origin": origin,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "Content-Type"
+    }
 
+    try:
+        response = requests.options(url, headers=headers)
+        print(f"CORS check OPTIONS response status: {response.status_code}")
+        print("Headers returned:")
+        for header, value in response.headers.items():
+            print(f"  {header}: {value}")
+
+        if response.status_code == 403:
+            print("🚨 CORS pre-flight check failed with 403.")
+            return False
+
+        required_headers = ["Access-Control-Allow-Origin", "Access-Control-Allow-Methods"]
+        for header in required_headers:
+            if header not in response.headers:
+                print(f"⚠️  Missing required CORS header: {header}")
+                return False
+
+        allowed_origin = response.headers.get("Access-Control-Allow-Origin", "")
+        allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+
+        print(f"Allowed Origin: {allowed_origin}")
+        print(f"Allowed Methods: {allowed_methods}")
+
+        if origin != allowed_origin and allowed_origin != "*":
+            print("⚠️  Origin mismatch detected.")
+            return False
+
+        if "GET" not in allowed_methods:
+            print("⚠️  GET method not allowed in CORS settings.")
+            return False
+
+        print("✅ CORS pre-flight check passed.")
+        return True
+
+    except requests.RequestException as e:
+        print(f"Error during CORS check: {e}")
+        return False
 
 def print_path_issues(issues):
     if issues:
@@ -672,14 +760,18 @@ def print_path_issues(issues):
                 msg = f"Unknown issue type: {issue}"
             print(msg)
             logging.info(msg)
+            
 
-def download_url(uri, httpRange=None, base_url=None):
-    """
-    Download URL using exact headers from working curl command.
-    """
+
+def get_origin(url):
+    parsed_url = urlparse(url)
+    origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    return origin            
+
+def download_url(uri, httpRange=None, base_url=None, retries=3, delay=1):
     base_referer = '/'.join((base_url or uri).split('/')[:3])
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0...',
         'Referer': base_referer,
         'Accept': '*/*'
     }
@@ -687,20 +779,18 @@ def download_url(uri, httpRange=None, base_url=None):
     if httpRange:
         headers['Range'] = httpRange
 
-    try:
-        logging.info(f"Attempting to download with curl-matching headers: {uri}")
-        response = requests.get(
-            uri, 
-            headers=headers, 
-            verify=False,
-            allow_redirects=True
-        )
-        response.raise_for_status()
-        logging.info(f"Successfully downloaded: {uri}")
-        return response.content
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error downloading URL {uri}: {e}")
-        return None
+    for attempt in range(retries):
+        try:
+            response = requests.get(uri, headers=headers, verify=False, allow_redirects=True)
+            response.raise_for_status()
+            logging.info(f"Successfully downloaded: {uri}")
+            return response.content
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"Attempt {attempt+1}/{retries} failed for {uri}: {e}")
+            time.sleep(delay)
+    
+    logging.error(f"All {retries} attempts failed for {uri}")
+    return None
 
 
 def load_with_retries(url, retries=3, delay=2, referer=None):
