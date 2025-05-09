@@ -702,7 +702,6 @@ def check_cors(url, origin="https://your-domain.com"):
     headers = {
         "Origin": origin,
         "Access-Control-Request-Method": "GET",
-        "Access-Control-Request-Headers": "Content-Type"
     }
 
     try:
