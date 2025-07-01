@@ -126,7 +126,7 @@ def analyze_variant(variant_url, bandwidth):
 
         for i, segment in enumerate(variant_playlist.segments[:num_segments_to_analyze_per_playlist]):
             logging.info(f"Processing segment {i+1}/{num_segments_to_analyze_per_playlist} URI: {segment.uri}")
-            segment_uri = urljoin(base_url, segment.uri) if not segment.uri.startswith('http') else segment.uri
+            segment_uri = urljoin(variant_url, segment.uri) if not segment.uri.startswith('http') else segment.uri
             
             segment_data = download_url(segment_uri, get_range(segment.byterange))
             if segment_data is None:

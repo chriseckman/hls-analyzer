@@ -2,3 +2,5 @@
 *.ts
 *.log
 *.m3u8
+
+venv/
